@@ -111,6 +111,7 @@ class AutofailTest < Test
   end
 
   def execute(autograder, test_result)
+    #puts "Autofailing!"
     test_result.add_diagnostic(@fail_msg)
     test_result.fail
   end
@@ -135,6 +136,7 @@ class TestGroup
       # Could do something with prep_msgs, although
       # they're not really part of a specific test.
     rescue => ex
+
       # Make all tests auto-fail
       wrapped_tests = []
       @members.each do |test|
@@ -267,9 +269,18 @@ class RunCommand
     prep_msgs.push("Running command #{@cmd}")
     raise "run_script missing command" if @cmd.nil?
     @input = '/dev/null' if @input.nil?
-    input_data = File.read(@input)
-    stdout_str, stderr_str, status = Open3.capture3(*@cmd, stdin_data: input_data)
-    #puts "stdout_str=#{stdout_str}"
+
+    # Run the command
+    begin
+      input_data = File.read(@input)
+      stdout_str, stderr_str, status = Open3.capture3(*@cmd, stdin_data: input_data)
+      #puts "stdout_str=#{stdout_str}"
+    rescue => ex
+      prep_msgs.push("Command #{@cmd} failed: #{ex.message}")
+      raise "#{cmd[0]} failed"
+    end
+
+    # Check to see whether the command was successful
     if !status.success?
       prep_msgs.push("Command #{cmd} failed")
       raise "#{cmd[0]} command failed"
