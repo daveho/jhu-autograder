@@ -6,6 +6,14 @@ require 'open3'
 # Main object model classes
 ########################################################################
 
+# Generic exception type for test failures
+class TestFailure < RuntimeError
+  def initialize(msg)
+    super(msg)
+  end
+end
+
+
 # Rubric: collection of RubricItems
 class Rubric
   attr_reader :items
@@ -60,7 +68,7 @@ class Test
     return TestCheckFiles.new(rubric_item_id, file_list)
   end
 
-  # Set visibility to false
+  # Change visibility (default is true)
   def visibility(b)
     @is_visible = b
     return self
@@ -81,16 +89,32 @@ class TestResult
     @score = 0.0
   end
 
+  # Add a diagnostic message.
+  # If the test is visible, these messages will be
+  # visible to the student.
   def add_diagnostic(msg)
     @diagnostics.push(msg)
   end
 
+  # Set test as passed or failed depending on the value of
+  # a boolean argument (true=passed, false=failed).
   def pass_if(b)
     @score = b ? @rubric_item.max_score : 0.0
   end
 
+  # Set test as failed.
   def fail
     @score = 0.0
+  end
+
+  # Set test as failed due to an unexpected exception.
+  def fail_unexpected_exception(ex)
+    add_diagnostic("Test raised unexpected #{ex.class} exception, please notify instructors")
+    add_diagnostic("Exception message: #{ex.message}")
+
+    # Set the test to visible in this case, otherwise the student
+    # won't see the diagnostic
+    @test.visibility(true)
   end
 
   def to_json_obj
@@ -126,21 +150,26 @@ class TestGroup
   end
 
   def prepare
-    prep_msgs = []
     begin
       @prep.each do |prep|
         #puts "Executing preparation step #{prep.class}"
-        prep.execute(prep_msgs)
+        prep.execute()
       end
       # All preparation steps succeded.
-      # Could do something with prep_msgs, although
-      # they're not really part of a specific test.
-    rescue => ex
-
+    rescue TestFailure => ex
       # Make all tests auto-fail
       wrapped_tests = []
       @members.each do |test|
-        wrapped_tests.push(AutofailTest.new(test, prep_msgs.last))
+        wrapped_tests.push(AutofailTest.new(test, ex.message))
+      end
+      @members = wrapped_tests
+    rescue => ex
+      # Also make all tests auto-fail, although now we're
+      # dealing with something other than a TestFailure,
+      # meaning it's likely to be an internal error of some kind
+      wrapped_tests = []
+      @members.each do |test|
+        wrapped_tests.push(AutofailTest.new(test, "Unexpected #{ex.class} exception: #{ex.message}"))
       end
       @members = wrapped_tests
     end
@@ -190,7 +219,17 @@ class Autograder
   def execute_test(test)
     rubric_item = @rubric.lookup_item(test.rubric_item_id)
     test_result = TestResult.new(test, rubric_item)
-    test.execute(self, test_result)
+    begin
+      test.execute(self, test_result)
+    rescue TestFailure => ex
+      # If the test raised a TestFailure, treat that as a completely
+      # failed test
+      test_result.fail
+      test_result.add_diagnostic("Test failed")
+    rescue => ex
+      # This is an unexpected exception, not good
+      test_result.fail_unexpected_exception(ex)
+    end
     @test_results.push(test_result)
   end
 end
@@ -219,6 +258,9 @@ class TestCheckFiles < Test
     @file_list.each do |filename|
       exists = File.file?("submission/#{filename}")
       test_result.add_diagnostic("#{filename} exists: #{exists}")
+      if !exists
+        test_result.add_diagnostic("Your submission is missing required file or files!")
+      end
       count += 1 if exists
     end
     test_result.pass_if(count == @file_list.length)
@@ -228,18 +270,21 @@ end
 # MUnit test (https://cis.gvsu.edu/~kurmasz/Software/mipsunit_munit/).
 # munit.jar must be in the autograder root directory (/autograder).
 class MUnitTest < Test
-  def initialize(rubric_item_id, asm_filename, testclass_filename, show_munit_output: false)
+  def initialize(rubric_item_id, asm_filename, testclass_filename, show_munit_output: false, timeout: 10)
     super(rubric_item_id)
     @asm_filename = asm_filename
     @testclass_filename = testclass_filename
     @show_munit_output = show_munit_output
+    @timeout = timeout
   end
 
   def execute(autograder, test_result)
-    cmd = ['java', '-jar', 'munit.jar', @asm_filename, @testclass_filename]
+    cmd = ['timeout', @timeout.to_s, 'java', '-jar', 'munit.jar', @asm_filename, @testclass_filename]
     stdout_str, stderr_str, status = Open3.capture3(*cmd, stdin_data: '')
     test_result.pass_if(status.success?)
-    if status.success?
+    if status.exitstatus == 124
+      test_result.add_diagnostic("MUnit test timed out after #{@timeout} seconds")
+    elsif status.success?
       test_result.add_diagnostic("MUnit test #{@testclass_filename} passed")
     else
       test_result.add_diagnostic("MUnit test #{@testclass_filename} failed")
@@ -264,10 +309,9 @@ class RunCommand
     @output = output
   end
 
-  def execute(prep_msgs)
+  def execute
     #puts "run_command: cmd=#{@cmd}, input=#{@input}, output=#{@output}"
-    prep_msgs.push("Running command #{@cmd}")
-    raise "run_script missing command" if @cmd.nil?
+    raise "run_command missing command" if @cmd.nil?
     @input = '/dev/null' if @input.nil?
 
     # Run the command
@@ -276,14 +320,18 @@ class RunCommand
       stdout_str, stderr_str, status = Open3.capture3(*@cmd, stdin_data: input_data)
       #puts "stdout_str=#{stdout_str}"
     rescue => ex
-      prep_msgs.push("Command #{@cmd} failed: #{ex.message}")
-      raise "#{cmd[0]} failed"
+      # Report an exception here as a TestFailure: if the
+      # tests are properly written, prep commands shouldn't
+      # fail (and in general, there's no inherent way
+      # of knowing whose fault the failure is.)
+      raise TestFailure.new("Command #{@cmd} failed: #{ex.message}")
     end
 
     # Check to see whether the command was successful
     if !status.success?
-      prep_msgs.push("Command #{cmd} failed")
-      raise "#{cmd[0]} command failed"
+      #raise "#{cmd[0]} command failed"
+      # Same deal as earlier: treat this as a test failure
+      raise TestFailure.new("Command #{@cmd} failed: #{ex.message}")
     end
     # If output was redirected to file, write it
     if !@output.nil?
