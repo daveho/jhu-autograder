@@ -68,6 +68,11 @@ class Test
     return TestCheckFiles.new(rubric_item_id, file_list)
   end
 
+  # Factory method: check that make succeeds (target is optional)
+  def self.make_succeeds(rubric_item_id, *args)
+    return TestMakeSucceeds.new(rubric_item_id, *args)
+  end
+
   # Change visibility (default is true)
   def visibility(b)
     @is_visible = b
@@ -294,6 +299,34 @@ class MUnitTest < Test
           test_result.add_diagnostic(line)
         end
       end
+    end
+  end
+end
+
+class TestMakeSucceeds < Test
+  def initialize(rubric_item_id, *args)
+    super(rubric_item_id)
+    @args = args
+  end
+
+  def execute(autograder, test_result)
+    cmd = ['make']
+    @args.each { |arg| cmd.push(arg) }
+    test_result.add_diagnostic("Running command: #{cmd.join(' ')}")
+    Dir.chdir('submission') do
+      stdout_str, stderr_str, status = Open3.capture3(*cmd, stdin_data: '')
+      test_result.add_diagnostic('')
+      stdout_str.split('\n').each do |line|
+        test_result.add_diagnostic(line)
+      end
+      if !stderr_str.empty?
+        test_result.add_diagnostic('')
+        test_result.add_diagnostic('Error output:')
+        stderr_str.split('\n').each do |line|
+          test_result.add_diagnostic(line)
+        end
+      end
+      test_result.pass_if(status.success?)
     end
   end
 end
