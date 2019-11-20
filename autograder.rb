@@ -3,6 +3,26 @@
 require 'open3'
 
 ########################################################################
+# Resolve filenames in autograder source directory
+########################################################################
+
+def a(filename)
+  if File.directory?('/autograder')
+    return "/autograder/source/#{filename}"
+  else
+    return filename
+  end
+end
+
+########################################################################
+# Log to stdout
+########################################################################
+
+def log(msg)
+  puts "#{Time.now.utc}: #{msg}"
+end
+
+########################################################################
 # Main object model classes
 ########################################################################
 
@@ -128,7 +148,7 @@ class TestResult
       'score' => @score,
       'max_score' => @rubric_item.max_score,
       'output' => @diagnostics.join("\n"),
-      'visibility' => @test.is_visible
+      'visibility' => @test.is_visible ? 'visible' : 'hidden'
     }
   end
 end
@@ -174,7 +194,8 @@ class TestGroup
       # meaning it's likely to be an internal error of some kind
       wrapped_tests = []
       @members.each do |test|
-        wrapped_tests.push(AutofailTest.new(test, "Unexpected #{ex.class} exception: #{ex.message}"))
+        stacktrace = ex.backtrace.drop(1).join("\n")
+        wrapped_tests.push(AutofailTest.new(test, "Unexpected #{ex.class} exception: #{ex.message}\n#{stacktrace}"))
       end
       @members = wrapped_tests
     end
@@ -284,7 +305,8 @@ class MUnitTest < Test
   end
 
   def execute(autograder, test_result)
-    cmd = ['timeout', @timeout.to_s, 'java', '-jar', 'munit.jar', @asm_filename, @testclass_filename]
+    cmd = ['timeout', @timeout.to_s, 'java', '-jar', a('munit.jar'), @asm_filename, @testclass_filename]
+    log("MUnitTest: cmd=#{cmd}")
     stdout_str, stderr_str, status = Open3.capture3(*cmd, stdin_data: '')
     test_result.pass_if(status.success?)
     if status.exitstatus == 124
@@ -366,6 +388,9 @@ class RunCommand
       # Same deal as earlier: treat this as a test failure
       raise TestFailure.new("Command #{@cmd} failed: #{ex.message}")
     end
+
+    log("run_command: success?")
+
     # If output was redirected to file, write it
     if !@output.nil?
       File.open(@output, 'w') do |outf|
