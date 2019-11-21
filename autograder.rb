@@ -93,6 +93,29 @@ class Test
     return TestMakeSucceeds.new(rubric_item_id, *args)
   end
 
+  # FIXME: need a factory method for creating MUnit tests
+
+  # Factory method: run an arbitrary command in the submission directory
+  def self.run_command(rubric_item_id, cmd, show_output: false, timeout: 10)
+    return TestRunCommand.new(rubric_item_id, cmd,
+                              {'show_output' => show_output, 'timeout' => timeout })
+  end
+
+  # Factory method: run an arbitrary command (which presumably generates some output)
+  # and then diff generated files against expected files.
+  # cmd parameter is an array containing the command to run.
+  # diff_files parameter is an array of file names: each consecutive pair
+  # is treated as expected and actual files to diff.  Overall test
+  # succeeds if all diff commands are successful (no differences).
+  def self.run_command_and_diff(rubric_item_id, cmd: nil, diff_files: nil, diff_opts: '')
+    return TestRunCommandAndDiff.new(rubric_item_id, cmd, diff_files, diff_opts)
+  end
+
+  # Test guaranteed to succeed, useful for free points
+  def self.free_points(rubric_item_id)
+    return TestFreePoints.new(rubric_item_id)
+  end
+
   # Change visibility (default is true)
   def visibility(b)
     @is_visible = b
@@ -130,6 +153,11 @@ class TestResult
   # Set test as failed.
   def fail
     @score = 0.0
+  end
+
+  # Set test as passed
+  def pass
+    @score = @rubric_item.max_score
   end
 
   # Set test as failed due to an unexpected exception.
@@ -280,14 +308,15 @@ class TestCheckFiles < Test
   end
 
   def execute(autograder, test_result)
+    log("TestCheckFiles: checking #{@file_list.join(' ')}")
     count = 0
     @file_list.each do |filename|
       exists = File.file?("submission/#{filename}")
       test_result.add_diagnostic("#{filename} exists: #{exists}")
-      if !exists
-        test_result.add_diagnostic("Your submission is missing required file or files!")
-      end
       count += 1 if exists
+    end
+    if count != @file_list.length
+      test_result.add_diagnostic("Your submission is missing required file or files!")
     end
     test_result.pass_if(count == @file_list.length)
   end
@@ -334,6 +363,7 @@ class TestMakeSucceeds < Test
   def execute(autograder, test_result)
     cmd = ['make']
     @args.each { |arg| cmd.push(arg) }
+    log("TestMakeSucceeds: cmd=#{cmd}")
     test_result.add_diagnostic("Running command: #{cmd.join(' ')}")
     Dir.chdir('submission') do
       stdout_str, stderr_str, status = Open3.capture3(*cmd, stdin_data: '')
@@ -353,6 +383,97 @@ class TestMakeSucceeds < Test
   end
 end
 
+# A generic Test class for running an arbitrary command
+# in the submission directory.  Success is determined by
+# whether command completes successfully.
+class TestRunCommand < Test
+  def initialize(rubric_item_id, cmd, opts)
+    super(rubric_item_id)
+    @cmd = cmd
+    @show_output = opts['show_output']
+    @timeout = opts['timeout'].to_s
+  end
+
+  def execute(autograder, test_result)
+    cmd = ['timeout', @timeout] + @cmd
+    test_result.add_diagnostic("Running command: #{cmd.join(' ')}")
+    Dir.chdir('submission') do
+      stdout_str, stderr_str, status = Open3.capture3(*cmd, stdin_data: '')
+      if @show_output
+        test_result.add_diagnostic('')
+        stdout_str.split('\n').each do |line|
+          test_result.add_diagnostic(line)
+        end
+        if !stderr_str.empty?
+          test_result.add_diagnostic('')
+          test_result.add_diagnostic('Error output:')
+          stderr_str.split('\n').each do |line|
+            test_result.add_diagnostic(line)
+          end
+        end
+      end
+      test_result.pass_if(status.success?)
+    end
+  end
+end
+
+class TestRunCommandAndDiff < Test
+  def initialize(rubric_item_id, cmd, diff_files, diff_opts)
+    super(rubric_item_id)
+    @cmd = cmd
+    @diff_files = diff_files
+    @diff_opts = diff_opts
+  end
+
+  def execute(autograder, test_result)
+    log("TestRunCommandAndDiff: running command: #{@cmd.join(' ')}")
+    test_result.add_diagnostic("Running command: #{@cmd.join(' ')}")
+    Dir.chdir('submission') do
+      stdout_str, stderr_str, status = Open3.capture3(*@cmd, stdin_data: '')
+      if !status.success?
+        test_result.add_diagnostic("Command did not succeed!")
+      end
+      test_result.add_diagnostic('')
+    end
+
+    i = 0
+    any_diffs = false
+    while i < @diff_files.length-1
+      expected = @diff_files[i]
+      actual = @diff_files[i+1]
+      test_result.add_diagnostic("Comparing #{expected} and #{actual}")
+      Dir.chdir('submission') do
+        #diff_cmd = ['diff', expected, actual]
+        diff_cmd = ['diff']
+        diff_cmd.concat(@diff_opts.split(/\s+/))
+        diff_cmd.push(expected)
+        diff_cmd.push(actual)
+        log("TestRunCommandAndDiff: running diff command: #{diff_cmd.join(' ')}")
+        stdout_str, stderr_str, status = Open3.capture3(*diff_cmd, stdin_data: '')
+        if status.success?
+          test_result.add_diagnostic("  No differences!")
+        else
+          test_result.add_diagnostic("  Files differ!")
+          any_diffs = true
+        end
+        i += 2
+      end
+      test_result.pass_if(!any_diffs)
+    end
+  end
+end
+
+class TestFreePoints < Test
+  def initialize(rubric_item_id)
+    super(rubric_item_id)
+  end
+
+  def execute(autograder, test_result)
+    test_result.add_diagnostic('Free points, test passes unconditionally')
+    test_result.pass
+  end
+end
+
 ########################################################################
 # Preparation steps initialization
 ########################################################################
@@ -365,7 +486,7 @@ class RunCommand
   end
 
   def execute
-    #puts "run_command: cmd=#{@cmd}, input=#{@input}, output=#{@output}"
+    log("RunCommand: cmd=#{@cmd}, input=#{@input}, output=#{@output}")
     raise "run_command missing command" if @cmd.nil?
     @input = '/dev/null' if @input.nil?
 
@@ -379,17 +500,17 @@ class RunCommand
       # tests are properly written, prep commands shouldn't
       # fail (and in general, there's no inherent way
       # of knowing whose fault the failure is.)
-      raise TestFailure.new("Command #{@cmd} failed: #{ex.message}")
+      raise TestFailure.new("Command #{@cmd.join(' ')} failed: #{ex.message}")
     end
 
     # Check to see whether the command was successful
     if !status.success?
       #raise "#{cmd[0]} command failed"
       # Same deal as earlier: treat this as a test failure
-      raise TestFailure.new("Command #{@cmd} failed: #{ex.message}")
+      raise TestFailure.new("Command #{@cmd.join(' ')} failed!")
     end
 
-    log("run_command: success?")
+    #log("run_command: success?")
 
     # If output was redirected to file, write it
     if !@output.nil?
