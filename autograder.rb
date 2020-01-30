@@ -1,5 +1,14 @@
 # Framework for creating Gradescope autograders
 
+# ************************************************************
+#
+# WARNING WARNING WARNING WARNING WARNING WARNING WARNING
+#
+# Don't use this code, it will not have any further development
+# or maintenance.
+#
+# ************************************************************
+
 require 'open3'
 
 ########################################################################
