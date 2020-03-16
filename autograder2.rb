@@ -103,6 +103,19 @@ end
 # in general, tasks can (and should) be lambdas
 
 class X
+  # Return list of files matching specified pattern in files directory.
+  # This is not a task, it returns a list of the files matching the pattern.
+  def self.glob(pattern)
+    result = []
+    IO.popen("cd #{$files} && sh -c 'ls #{pattern}'") do |f|
+      f.each_line do |line|
+        line.rstrip!
+        result.push(line)
+      end
+    end
+    return result
+  end
+
   # Copy one or more files from the 'files' directory into the 'submission' directory
   def self.copy(*files)
     raise "Internal error: no file specified to copy" if files.empty?
