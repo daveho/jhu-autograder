@@ -135,6 +135,24 @@ class X
     end
   end
 
+  # Recursively copy one or more entire directories from the 'files' directory into the 'submission' directory
+  def self.copydir(*dirnames)
+    raise "Internal error: no directory specified to copy" if dirnames.empty?
+    if dirnames.size == 1
+      # base case: copy a single directory
+      dirname = dirnames[0]
+      return ->(outcomes, results, logger, rubric) do
+        logger.log("Copying directory #{dirname} from files...")
+        rc = system('cp', '-r', "#{$files}/#{dirname}", "submission")
+        outcomes.push(rc)
+      end
+    else
+      # recursive case: copy multiple directories
+      tasks = dirnames.map { |dirname| X.copydir(dirname) }
+      return X.all(*tasks)
+    end
+  end
+
   # Check to see if a file in the submission directory exists and is executable
   def self.checkExe(filename)
     return ->(outcomes, results, logger, rubric) do
@@ -173,13 +191,13 @@ class X
   end
 
   # Run a command in the 'submission' directory
-  def self.run(*cmd, timeout: DEFAULT_TIMEOUT, report_command: true, report_stdout: false, report_stderr: false)
+  def self.run(*cmd, timeout: DEFAULT_TIMEOUT, report_command: true, report_stdout: false, report_stderr: false, env: {})
     return ->(outcomes, results, logger, rubric) do
       raise "Internal error: submission directory is missing?" if !File.directory?('submission')
       Dir.chdir('submission') do
         cmd = ['timeout', timeout.to_s ] + cmd
         logger.log("Running command: #{cmd.join(' ')}") if report_command
-        stdout_str, stderr_str, status = Open3.capture3(*cmd, stdin_data: '')
+        stdout_str, stderr_str, status = Open3.capture3(env, *cmd, stdin_data: '')
         logger.log_cmd_output('Standard output', stdout_str, report_stdout ? :public : :private)
         logger.log_cmd_output('Standard error', stderr_str, report_stderr ? :public : :private)
         if status.success?
