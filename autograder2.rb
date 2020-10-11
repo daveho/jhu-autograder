@@ -36,6 +36,11 @@ end
 # Default timeout for executed commands
 DEFAULT_TIMEOUT = 20
 
+# Default subprocess success predicate
+DEFAULT_SUCCESS_PRED = ->(status, stdout_str, stderr_str) do
+  return status.success?
+end
+
 # Wrapper class for rubric, simplifies lookup of item by testname
 class Rubric
   attr_reader :spec
@@ -53,7 +58,9 @@ class Rubric
 end
 
 # Logger: student-visible test output is generated with log,
-# while logprivate generate output that is only visible to instructors.
+# while logprivate generates output that is only visible to instructors.
+# log_cmd_output generates either public or private output,
+# depending on the value of its visibility parameter.
 class Logger
   def initialize
     @msgs = []
@@ -66,6 +73,10 @@ class Logger
   end
 
   # Log command output (stdout or stderr) to the reported diagnostics
+  # Parameters:
+  #   kind - what kind of output: each emitted line is prefixed with this string
+  #   output - output to log
+  #   visibility - either :public or :private
   def log_cmd_output(kind, output, visibility)
     logfn = ->(msg) { visibility == :public ? log(msg) : logprivate(msg) }
     logfn.call("#{kind}:")
@@ -103,11 +114,27 @@ end
 # in general, tasks can (and should) be lambdas
 
 class X
+  # Build an array consisting of all arguments as elements, with the
+  # exception that arguments that are arrays will have their elements
+  # added.  This is useful for building a large argument array
+  # out of an arbitrary combination of arrays and individual values.
+  def self.combine(*args)
+    result = []
+    args.each do |arg|
+      if arg.kind_of?(Array)
+        result.concat(arg)
+      else
+        result.push(arg)
+      end
+    end
+    return result
+  end
+
   # Return list of files matching specified pattern in files directory.
   # This is not a task, it returns a list of the files matching the pattern.
   def self.glob(pattern)
     result = []
-    IO.popen("cd #{$files} && sh -c 'ls #{pattern}'") do |f|
+    IO.popen("cd #{$files} && sh -c 'ls -d #{pattern}'") do |f|
       f.each_line do |line|
         line.rstrip!
         result.push(line)
@@ -117,20 +144,25 @@ class X
   end
 
   # Copy one or more files from the 'files' directory into the 'submission' directory
-  def self.copy(*files)
+  #
+  # Options:
+  #   subdir: if specified, files are copied into this subdirectory of submission
+  #   report_command: if true, command is reported to student (defaults to true)
+  def self.copy(*files, subdir: nil, report_command: true)
     raise "Internal error: no file specified to copy" if files.empty?
     if files.size == 1
       # base case: copy a single file
       filename = files[0]
+      destdir = subdir.nil? ? 'submission' : "submission/#{subdir}"
       return ->(outcomes, results, logger, rubric) do
-        logger.log("Copying #{filename} from files...")
-        rc = system('cp', "#{$files}/#{filename}", "submission")
+        logger.log("Copying #{filename} from files...") if report_command
+        rc = system('cp', "#{$files}/#{filename}", destdir)
         #logger.log("cp result is #{rc}")
         outcomes.push(rc)
       end
     else
       # recursive case: copy multiple files
-      tasks = files.map { |filename| X.copy(filename) }
+      tasks = files.map { |filename| X.copy(filename, subdir: subdir, report_command: report_command) }
       return X.all(*tasks)
     end
   end
@@ -153,27 +185,59 @@ class X
     end
   end
 
-  # Check to see if a file in the submission directory exists and is executable
-  def self.checkExe(filename)
+  # Check to see if files in the submission directory exist.
+  # Task will produce a true outcome IFF all of the files exist.
+  #
+  # Options:
+  #   check_exe: if true, also check that file(s) are executable (default false)
+  #   subdir: if set, file(s) are checked in specified subdirectory of 'submission'
+  def self.check(*filenames, check_exe: false, subdir: nil)
     return ->(outcomes, results, logger, rubric) do
-      full_filename = "submission/#{filename}"
-      logger.log("Checking that #{filename} exists and is executable")
-      if File.exists?(full_filename) and File.executable?(full_filename)
-        outcomes.push(true)
-      else
-        logger.log("#{filename} doesn't exist, or is not executable")
-        outcomes.push(false)
+      checkdir = subdir.nil? ? 'submission' : "submission/#{subdir}"
+      checks = []
+      filenames.each do |filename|
+        full_filename = "#{checkdir}/#{filename}"
+        logger.log("Checking that #{filename} exists#{check_exe ? ' and is executable' : ''}")
+        if File.exists?(full_filename) and (!check_exe || File.executable?(full_filename))
+          checks.push(true)
+        else
+          logger.log("#{filename} doesn't exist#{check_exe ? ', or is not executable' : ''}")
+          checks.push(false)
+        end
       end
+      outcomes.push(checks.all?)
     end
   end
 
-  # Run make in the 'submission' directory
-  def self.make(target)
+  # Check to see if files in the submission directory exist and are executable.
+  # Task will produce a true outcome IFF all of the files exist and are executable.
+  def self.check_exe(*filenames, subdir: nil)
+    return check(*filenames, check_exe: true, subdir: subdir)
+  end
+
+  # Use the check_exe function instead: this is just here for backwards
+  # compatibility.
+  def self.checkExe(*filenames, subdir: nil)
+    return check_exe(*filenames, subdir: subdir)
+  end
+
+  # Run make in the 'submission' directory (or a specified subdirectory).
+  # Parameters passed to this task are passed as command-line arguments
+  # to make.  With no arguments, the default target will be built.
+  #
+  # Options:
+  #   subdir: if specified, make is run in this subdirectory of 'submission'
+  def self.make(*makeargs, subdir: nil)
     return ->(outcomes, results, logger, rubric) do
-      raise "Internal error: submission directory is missing?" if !File.directory?('submission')
-      logger.log("Running command 'make #{target}'")
-      cmd = ['make', target]
-      Dir.chdir('submission') do
+      # Determine where to run make
+      cmddir = subdir.nil? ? 'submission' : "submission/#{subdir}"
+
+      # Make sure the directory actually exists
+      raise "Internal error: #{cmddir} directory is missing?" if !File.directory?(cmddir)
+
+      cmd = ['make'] + makeargs
+      logger.log("Running command #{cmd.join(' ')}")
+      Dir.chdir(cmddir) do
         stdout_str, stderr_str, status = Open3.capture3(*cmd, stdin_data: '')
         if status.success?
           logger.log("Successful make")
@@ -190,20 +254,60 @@ class X
     end
   end
 
-  # Run a command in the 'submission' directory
-  def self.run(*cmd, timeout: DEFAULT_TIMEOUT, report_command: true, report_stdout: false, report_stderr: false, env: {})
+  # Run a command in the 'submission' directory (or a specified subdirectory).
+  #
+  # Options:
+  #   timeout: timeout in seconds
+  #   report_command: report the executed command to student, defaults to true
+  #   report_stdout: report command stdout to student, defaults to false
+  #   report_stderr: report command stderr to student, defaults to false
+  #   report_outcome: report "Command failed!" if command fails, defaults to true
+  #   stdin_filename: name of file to send to command's stdin, defaults to nil (meaning empty stdin is sent)
+  #   stdout_filename: name of file to write command's stdout to (in the submission directory),
+  #                    defaults to nil (meaning that stdout is not written anywhere)
+  #   subdir: if specified, the command is run in this subdirectory of 'submission'
+  #   env: if specified, hash with additional environment variables to set for subprocess
+  #   success_pred: predicate to check subprocess success: must have a call method that
+  #                 takes process status object, standard output string, and
+  #                 standard error string as parameters, defaults to just checking
+  #                 status.success?
+  #
+  # Note that if stdin_filename is specified, its entire contents are read into memory.
+  def self.run(*cmd,
+               timeout: DEFAULT_TIMEOUT,
+               report_command: true,
+               report_stdout: false,
+               report_stderr: false,
+               report_outcome: true,
+               stdin_filename: nil,
+               stdout_filename: nil,
+               subdir: nil,
+               env: {},
+               success_pred: DEFAULT_SUCCESS_PRED)
     return ->(outcomes, results, logger, rubric) do
-      raise "Internal error: submission directory is missing?" if !File.directory?('submission')
-      Dir.chdir('submission') do
+      # Determine where to run the command
+      cmddir = subdir.nil? ? 'submission' : "submission/#{subdir}"
+
+      # Make sure the directory actually exists
+      raise "Internal error: #{cmddir} directory is missing?" if !File.directory?(cmddir)
+
+      Dir.chdir(cmddir) do
+        stdin_data = stdin_filename.nil? ? '' : File.read(stdin_filename, binmode: true)
         cmd = ['timeout', timeout.to_s ] + cmd
+        #puts "report_command=#{report_command}"
         logger.log("Running command: #{cmd.join(' ')}") if report_command
-        stdout_str, stderr_str, status = Open3.capture3(env, *cmd, stdin_data: '')
+        stdout_str, stderr_str, status = Open3.capture3(env, *cmd, stdin_data: stdin_data, binmode: true)
         logger.log_cmd_output('Standard output', stdout_str, report_stdout ? :public : :private)
         logger.log_cmd_output('Standard error', stderr_str, report_stderr ? :public : :private)
-        if status.success?
+        if !stdout_filename.nil?
+          File.open(stdout_filename, 'wb') do |outfh|
+            outfh.write(stdout_str)
+          end
+        end
+        if success_pred.call(status, stdout_str, stderr_str)
           outcomes.push(true)
         else
-          logger.log("Command failed!")
+          logger.log("Command failed!") if report_outcome
           outcomes.push(false)
         end
       end
@@ -276,6 +380,16 @@ class X
         task.call(outcomes, results, logger, rubric)
       end
       outcomes.map! { true }
+    end
+  end
+
+  # Execute one task and expect it to fail.
+  # The "inverted" task succeeds if the original task fails,
+  # and vice versa.
+  def self.expectfail(task)
+    return ->(outcomes, results, logger, rubric) do
+      task.call(outcomes, results, logger, rubric)
+      outcomes.map! { |b| !b }
     end
   end
 
