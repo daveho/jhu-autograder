@@ -314,6 +314,69 @@ class X
     end
   end
 
+  class Pred
+    attr_accessor :pred_func, :desc
+
+    def initialize(pred_func, desc)
+      @pred_func = pred_func
+      @desc = desc
+    end
+
+    def call(*args)
+      return @pred_func.call(*args)
+    end
+  end
+
+  # Create a predicate from a lambda and a string with a textual
+  # description of the predicate being evaluated.
+  # The lambda should take one parameter, the results map.
+  # When creating an eval_pred task, using this function to create
+  # a predicate is preferred to just using a lambda because it allows
+  # the task to generate a meaningful student-visible log message
+  # describing what the predicate is evaluating.
+  def self.pred(pred_func, desc)
+    return Pred.new(pred_func, desc)
+  end
+
+  # A task that evaluates a predicate and produces an outcome
+  # based on the result (true or false) of that predicate.
+  # This is useful for "synthetic" tests, i.e., ones whose outcomes
+  # aren't based by executing student code, but instead are evaluated
+  # by other criteria.  The "pred" parameter must have a "call"
+  # function which takes one parameter --- the results map, which
+  # allows the predicate to know whether previous tests have passed
+  # or failed --- and returns true or false.
+  # Suggestion: use the "pred" function to create the predicate,
+  # which will allow it to have a meaningful description that can be
+  # logged.
+  #
+  # Options:
+  def self.eval_pred(pred, report_desc: true, report_outcome: true)
+    return ->(outcomes, results, logger, rubric) do
+      if pred.respond_to?(:desc) && report_desc
+        logger.log("Checking predicate: #{pred.desc}")
+      end
+      outcome = pred.call(results)
+      if report_outcome
+        logger.log("Predicate evaluated as #{outcome}")
+      end
+      outcomes.push(outcome)
+    end
+  end
+
+  # Check whether a test passed.
+  # Requires that the results map is available.
+  # This can be called from within a predicate function,
+  # since the results map will be (at least partially) available by
+  # that time.
+  def self.test_passed(testname, results)
+    if !results.has_key?(testname)
+      return false
+    end
+    result_pair = results[testname]
+    return result_pair[0] >= 1.0
+  end
+
   # Run a task as a test.
   # The success or failure of the test will be reported.
   def self.test(testname, task)
