@@ -85,12 +85,17 @@ class Logger
     end
   end
 
-  # Save a message to be reported to student as part of test result
-  def log(msg)
+  # Save a message to be reported as part of test result:
+  # if the "student_visible" option is false (default is true),
+  # then the message will not be reported to the student
+  def log(msg, student_visible: true)
     # Send to private log
     logprivate(msg)
-    # Save message: will be made part of reported test result
-    @msgs.push(msg)
+
+    if student_visible
+      # Save message: will be made part of reported test result
+      @msgs.push(msg)
+    end
   end
 
   # Get all logged messages (returning a copy to avoid mutation issues)
@@ -261,7 +266,7 @@ class X
   #   report_command: report the executed command to student, defaults to true
   #   report_stdout: report command stdout to student, defaults to false
   #   report_stderr: report command stderr to student, defaults to false
-  #   report_outcome: report "Command failed!" if command fails, defaults to true
+  #   report_outcome: report "Command failed!" if command fails (and report_command is true), defaults to true
   #   stdin_filename: name of file to send to command's stdin, defaults to nil (meaning empty stdin is sent)
   #   stdout_filename: name of file to write command's stdout to (in the submission directory),
   #                    defaults to nil (meaning that stdout is not written anywhere)
@@ -307,7 +312,7 @@ class X
         if success_pred.call(status, stdout_str, stderr_str)
           outcomes.push(true)
         else
-          logger.log("Command failed!") if report_outcome
+          logger.log("Command failed!", student_visible: report_command && report_outcome)
           outcomes.push(false)
         end
       end
