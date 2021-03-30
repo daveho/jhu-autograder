@@ -1,5 +1,5 @@
 # Flexible Gradescope autograder framework
-# Copyright (c) 2019,2020 David H. Hovemeyer <david.hovemeyer@gmail.com>
+# Copyright (c) 2019-2021 David H. Hovemeyer <david.hovemeyer@gmail.com>
 #
 # Permission is hereby granted, free of charge, to any person obtaining
 # a copy of this software and associated documentation files (the
@@ -94,7 +94,10 @@ class Logger
 
     if student_visible
       # Save message: will be made part of reported test result
-      @msgs.push(msg)
+      encoded_msg = nil
+      # We want strings to be UTF-8
+      encoded_msg = msg.encode('UTF-8', :invalid => :replace, :undef => :replace)
+      @msgs.push(encoded_msg)
     end
   end
 
@@ -160,7 +163,7 @@ class X
       filename = files[0]
       destdir = subdir.nil? ? 'submission' : "submission/#{subdir}"
       return ->(outcomes, results, logger, rubric) do
-        logger.log("Copying #{filename} from files...") if report_command
+        logger.log("Copying #{filename} from files...", student_visible: report_command)
         rc = system('cp', "#{$files}/#{filename}", destdir)
         #logger.log("cp result is #{rc}")
         outcomes.push(rc)
@@ -403,13 +406,19 @@ class X
   # Execute all tasks in sequence, auto-failing any tasks that follow
   # a failed task. A single outcome is reported: true if all tasks succeeded,
   # false if any tasks failed.
-  def self.all(*tasks)
+  #
+  # Options:
+  #   report_failure: if true, report if a task failure will suppress further tasks (defaults to true)
+  def self.all(*tasks, report_failure: true)
     return ->(outcomes, results, logger, rubric) do
       task_outcomes = []
       any_failed = false
 
       # Execute the individual tasks
+      count = 0
       tasks.each do |task|
+        is_last = (count == tasks.length - 1)
+
         if any_failed
           # This task gets auto-failed
           task_outcomes.push(false)
@@ -420,8 +429,9 @@ class X
           raise "Internal error: task failed to generate an outcome" if task_outcomes.size < num_outcomes + 1
           any_failed = !task_outcomes[-1]
           raise "Internal error: task generated a non-boolean outcome" if not ([true,false].include?(any_failed))
-          logger.log("Task failed, not executing subsequent tasks") if any_failed
+          logger.log("Task failed, not executing subsequent tasks") if any_failed && report_failure && !is_last
         end
+        count += 1
       end
 
       # If all of the individual tasks succeeded, then the overall 'all' task has succeeded
