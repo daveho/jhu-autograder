@@ -1,5 +1,9 @@
 # Gradescope autograder framework
 
+**Note**: this repository is deprecated and will not be updated.
+Please see <https://github.com/daveho/declarative-autograder> for the
+most recent version of the autograder framework.
+
 This is an experiment to create a general-purpose framework for implementing
 [Gradescope](https://www.gradescope.com/) autograders.  (You should read
 the [Gradescope autograder specification](https://gradescope-autograders.readthedocs.io/en/latest/specs/) for more information about how they work.
